@@ -3,7 +3,7 @@ const { withRealtime, withFbns } = require('instagram_mqtt')
 const { IgApiClient } = require('instagram-private-api')
 const { EventEmitter } = require('events')
 const Collection = require('@discordjs/collection')
-
+const { authenticator } = require('otplib');
 const Util = require('../utils/Util')
 
 const ClientUser = require('./ClientUser')
@@ -352,21 +352,24 @@ class Client extends EventEmitter {
      * @param {string} password The password of the Instagram account.
      * @param {object} [state] Optional state object. It can be generated using client.ig.exportState().
      */
-    async login (username, password, state) {
-        const ig = withFbns(withRealtime(new IgApiClient()))
-        ig.state.generateDevice(username)
-        if (state) {
-            await ig.importState(state)
-        }
-        await ig.simulate.preLoginFlow()
-        const response = await ig.account.login(username, password)
-        const userData = await ig.user.info(response.pk)
+   
+async login(username, password, totpSeed, state) {
+    const ig = withFbns(withRealtime(new IgApiClient()));
+    ig.state.generateDevice(username);
+    if (state) {
+        await ig.importState(state);
+    }
+    await ig.simulate.preLoginFlow();
+
+    try {
+        const response = await ig.account.login(username, password);
+        const userData = await ig.user.info(response.pk);
         this.user = new ClientUser(this, {
             ...response,
-            ...userData
-        })
-        this.cache.users.set(this.user.id, this.user)
-        this.emit('debug', 'logged', this.user)
+            ...userData,
+        });
+        this.cache.users.set(this.user.id, this.user);
+        this.emit('debug', 'logged', this.user);
 
         const threads = [
             ...await ig.feed.directInbox().items(),
@@ -393,18 +396,28 @@ class Client extends EventEmitter {
             autoReconnect: true
         })
 
-        this.ig = ig
-        this.ready = true
-        this.emit('connected')
+        this.ig = ig;
+        this.ready = true;
+        this.emit('connected');
         this.eventsToReplay.forEach((event) => {
-            const eventType = event.shift()
+            const eventType = event.shift();
             if (eventType === 'realtime') {
-                this.handleRealtimeReceive(...event)
+                this.handleRealtimeReceive(...event);
             } else if (eventType === 'fbns') {
-                this.handleFbnsReceive(...event)
+                this.handleFbnsReceive(...event);
             }
-        })
+        });
+    } catch (error) {
+        if (error.name === 'IgLoginTwoFactorRequiredError' && totpSeed) {
+            const twoFactorCode = authenticator.generate(totpSeed);
+
+            console.log('Two-factor authentication completed successfully.');
+        } else {
+            // Rethrow or handle other errors
+            throw error;
+        }
     }
+}
 
     toJSON () {
         const json = {
